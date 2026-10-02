@@ -1,0 +1,6 @@
+.git
+data
+workspace
+native/osgb_bridge/build
+**/__pycache__
+.pytest_cache

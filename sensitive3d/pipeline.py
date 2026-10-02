@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -105,7 +105,6 @@ class Pipeline:
                     evidence[r.id] = ev
             self._log(f"  {tile}: {len(res.regions)} 个敏感标志")
         # signs on tile borders are seen from both tiles
-        before = {id(r): r for r in regions}
         old_ids = {id(r): r.id for r in regions}
         merged = merge_regions(regions)
         evidence = {r.id: evidence[old_ids[id(r)]] for r in merged if old_ids[id(r)] in evidence}

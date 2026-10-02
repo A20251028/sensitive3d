@@ -118,7 +118,6 @@ def detect_prohibitory(img, valid, pixel_size, masks) -> list[Detection2D]:
         inner = disk & ~local
         if inner.sum() < 0.1 * area:
             continue
-        sub = {k: m[sl2] for k, m in masks.items()}
         white, dark = _relative_light_dark(hsv[sl2], disk)
         white_frac = (white & inner).sum() / max(inner.sum(), 1)
         dark_frac = (dark & inner).sum() / max(inner.sum(), 1)

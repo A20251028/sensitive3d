@@ -9,7 +9,7 @@ views, so all levels of detail get the same, consistent result.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import cv2

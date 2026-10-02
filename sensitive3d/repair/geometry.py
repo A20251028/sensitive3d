@@ -17,7 +17,7 @@ from typing import Optional
 import mapbox_earcut
 import numpy as np
 
-from ..core.mesh import MeshFile, MeshPart, Texture, face_normals
+from ..core.mesh import MeshFile, MeshPart, face_normals
 from ..core.raster import rasterize_uv
 from ..core.texture import texel_size
 from ..detect.regions import SignRegion, plane_axes

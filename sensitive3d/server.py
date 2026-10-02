@@ -27,7 +27,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -197,7 +197,8 @@ class JobManager:
                     zf.write(rep, "sensitive3d_report.json")
             job.status = "done"
             job.progress = 1.0
-            job.message = job.report.get("summary") and f"完成: 去除 {len(job.report['regions'])} 个敏感标志" or "完成: 未发现敏感标志"
+            n = len(job.report.get("regions", []))
+            job.message = f"完成: 去除 {n} 个敏感标志" if n else "完成: 未发现敏感标志"
         except Exception as e:
             job.status = "failed"
             job.error = f"{type(e).__name__}: {e}"

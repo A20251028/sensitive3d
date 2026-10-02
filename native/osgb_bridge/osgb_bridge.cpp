@@ -32,6 +32,7 @@
 #include <osg/TriangleIndexFunctor>
 #include <osgDB/FileNameUtils>
 #include <osgDB/FileUtils>
+#include <osgDB/fstream>
 #include <osgDB/ReadFile>
 #include <osgDB/ReaderWriter>
 #include <osgDB/Registry>
@@ -573,11 +574,26 @@ static bool writeNodeEmbedded(osg::Node* root, const std::string& outPath,
         o.close();
         img->setFileName(name);
         img->setWriteHint(osg::Image::NO_PREFERENCE);
+        if (getenv("S3D_DEBUG"))
+            std::cerr << "embed " << img << " as " << name << " (" << ib.bytes.size() << " bytes, "
+                      << (ov != overrides.end() ? "override" : cap != g_captured.end() ? "captured" : "encoded") << ")" << std::endl;
     }
 
     osg::ref_ptr<osgDB::Options> opts = new osgDB::Options("WriteImageHint=IncludeFile");
     opts->setDatabasePath(tmp.string());
-    bool ok = osgDB::writeNodeFile(*root, outPath, opts.get());
+    // Write through the stream interface: writing by file name would put the
+    // output directory in front of the search path, so an unrelated image
+    // with the same name next to the output file would be embedded instead.
+    bool ok = false;
+    osgDB::ReaderWriter* rw = osgDB::Registry::instance()->getReaderWriterForExtension("osgb");
+    if (rw) {
+        osgDB::ofstream fout(outPath.c_str(), std::ios::out | std::ios::binary);
+        if (fout) {
+            ok = rw->writeNode(*root, fout, opts.get()).success();
+            fout.close();
+            ok = ok && bool(fout);
+        }
+    }
     fs::remove_all(tmp);
     if (!ok) std::cerr << "cannot write " << outPath << std::endl;
     return ok;
@@ -693,6 +709,7 @@ static int cmdPatch(const std::string& in, const fs::path& patchDir, const std::
             }
             osg::Image* img = col.images[idx];
             overrides[img] = ib;
+            if (getenv("S3D_DEBUG")) std::cerr << "override " << img << " <- " << file << " (" << ib.bytes.size() << " bytes)" << std::endl;
             // keep the in-memory image consistent with the new data
             osg::ref_ptr<osg::Image> fresh = osgDB::readRefImageFile((patchDir / file).string());
             if (fresh) {

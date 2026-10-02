@@ -1,0 +1,14 @@
+# runtime dependencies (same as pyproject.toml); `pip install -e .` is preferred
+numpy>=1.23
+numba>=0.57
+scipy>=1.9
+opencv-contrib-python-headless>=4.7
+pillow>=9
+trimesh>=3.20
+scikit-image>=0.20
+fast-simplification>=0.1.7
+mapbox-earcut>=1.0
+fastapi>=0.100
+uvicorn[standard]>=0.22
+python-multipart>=0.0.6
+onnxruntime>=1.15  # optional: YOLO / LaMa models
