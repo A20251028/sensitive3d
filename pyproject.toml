@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sensitive3d"
+version = "0.1.0"
+description = "Detect and remove sensitive traffic signs from 3D reality meshes (OSGB / OBJ / glTF)"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.23",
+  "numba>=0.57",
+  "scipy>=1.9",
+  "opencv-contrib-python-headless>=4.7",
+  "pillow>=9",
+  "trimesh>=3.20",
+  "scikit-image>=0.20",
+  "fast-simplification>=0.1.7",
+  "mapbox-earcut>=1.0",
+  "fastapi>=0.100",
+  "uvicorn[standard]>=0.22",
+  "python-multipart>=0.0.6",
+]
+
+[project.optional-dependencies]
+yolo = ["onnxruntime>=1.15"]
+dev = ["pytest>=7", "httpx>=0.24"]
+
+[project.scripts]
+sensitive3d = "sensitive3d.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sensitive3d*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
