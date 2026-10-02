@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+native/osgb_bridge/build/
+workspace/
+data/
+*.egg-info/
+.venv/
+models/*.onnx
