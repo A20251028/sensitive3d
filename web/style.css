@@ -120,3 +120,57 @@ pre#log { max-height: 220px; overflow: auto; font-size: 11px; background: var(--
   .layout { grid-template-columns: 1fr; padding: 12px; }
   #canvasWrap { height: 46vh; }
 }
+
+/* --- stepwise flow --------------------------------------------------------- */
+.small { font-size: 12px; }
+.bad { color: var(--bad); font-weight: 600; }
+h3 { font-size: 14px; margin: 16px 0 8px; }
+.btn.danger { background: var(--bad); color: #fff; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+input[type=number], input[type=text] { padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); font-family: inherit; }
+.localbox { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 6px; }
+.adv { margin-top: 12px; }
+.adv .field { margin-top: 6px; }
+.jobhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.jobhead h2 { margin-bottom: 4px; }
+.stepper { list-style: none; padding: 0; margin: 14px 0; display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; counter-reset: st; }
+.stepper li { counter-increment: st; border: 1px solid var(--line); border-radius: 8px; padding: 8px 6px; text-align: center; font-size: 13px; display: flex; flex-direction: column; gap: 2px; background: var(--card); }
+.stepper li span::before { content: counter(st) ". "; color: var(--muted); }
+.stepper li small { font-size: 11px; color: var(--muted); }
+.stepper li.st-done { border-color: var(--ok); }
+.stepper li.st-done small { color: var(--ok); }
+.stepper li.st-running, .stepper li.cur { border-color: var(--accent); background: var(--accent-soft); }
+.stepper li.st-failed, .stepper li.st-stopped, .stepper li.st-cancelled { border-color: var(--bad); }
+.stepper li.st-failed small, .stepper li.st-stopped small, .stepper li.st-cancelled small { color: var(--bad); }
+.okbox, .errbox, .warnbox { border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+.okbox { background: #e6f4ea; color: var(--ok); }
+.errbox { background: #fdecea; color: var(--bad); }
+.warnbox { background: #fff4e5; color: var(--warn); }
+table.kv { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 0; }
+table.kv td { border-bottom: 1px solid var(--line); padding: 5px 6px; }
+table.kv td:nth-child(odd) { color: var(--muted); width: 18%; }
+ul.plain { margin: 6px 0; padding-left: 18px; font-size: 12px; word-break: break-all; }
+.summary .tag.ok { background: #e6f4ea; color: var(--ok); }
+.summary .tag.warn { background: #fff4e5; color: var(--warn); }
+.bulk { display: flex; gap: 8px; margin: 8px 0 12px; }
+.cand.review { border-color: #f0b35a; }
+.cand.on, .region.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 99px; margin-left: 6px; vertical-align: 2px; }
+.badge.auto { background: #e6f4ea; color: var(--ok); }
+.badge.review { background: #fff4e5; color: var(--warn); }
+.reasons { grid-column: 1 / -1; color: var(--warn); font-size: 12px; }
+.region .meta span { word-break: break-all; }
+.decide { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 8px 12px 12px; font-size: 13px; border-top: 1px solid var(--line); }
+.decide select { max-width: 100%; }
+.decide .margin { width: 70px; }
+.prov { padding: 0 12px; font-size: 12px; }
+.prov pre { max-height: 180px; overflow: auto; background: var(--bg); padding: 6px; border-radius: 6px; font-size: 11px; }
+.noimg { aspect-ratio: 1; display: grid; place-content: center; color: var(--muted); font-size: 12px; }
+.prow { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+.prow input[type=number] { width: 84px; }
+.prow .pname { width: 140px; }
+.verdict { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.verdict div { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.verdict span { color: var(--muted); font-size: 12px; }
+.marker-label.review { background: #ef8f00; }
+@media (max-width: 960px) { .stepper { grid-template-columns: repeat(3, 1fr); } .grid2 { grid-template-columns: 1fr; } }

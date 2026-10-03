@@ -67,8 +67,12 @@ def part_targets(
     edit: Optional[PartEdit],
     regions: Sequence[SignRegion],
     cfg: TextureConfig,
+    protected: Optional[list] = None,
 ) -> Optional[Target]:
-    """New fill faces + texels of remaining faces lying inside a sign region."""
+    """New fill faces + texels of remaining faces lying inside a sign region.
+
+    Texels inside a ``protected`` ``(lo, hi)`` box are never targets.
+    """
     if part.uvs is None or len(part.faces) == 0:
         return None
     lo, hi = part.bounds()
@@ -107,6 +111,8 @@ def part_targets(
         d = np.linalg.norm(tm.positions[is_new][:, None, :] - centers[None], axis=2)
         reg[is_new] = ids[np.argmin(d, axis=1)]
     sel = reg >= 0
+    for plo, phi in protected or []:
+        sel &= ~np.all((tm.positions >= plo) & (tm.positions <= phi), axis=1)
     if not sel.any():
         return None
     fn = part.face_normals()[tm.faces[sel]]

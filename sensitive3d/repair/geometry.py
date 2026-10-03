@@ -43,6 +43,29 @@ class RegionGeometry:
     mount: str = "unknown"  # pole | wall | free
     ground_z: Optional[float] = None
     pole_xy: Optional[np.ndarray] = None
+    confidence: str = "low"  # high | low: low means the mounting must be confirmed by a person
+    metrics: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "type": self.mount,
+            "confidence": self.confidence,
+            "ground_z": None if self.ground_z is None else round(float(self.ground_z), 4),
+            "pole_xy": None if self.pole_xy is None else [round(float(x), 4) for x in self.pole_xy],
+            "metrics": self.metrics,
+        }
+
+    @staticmethod
+    def from_dict(region_id: int, d: Optional[dict]) -> "RegionGeometry":
+        d = d or {}
+        return RegionGeometry(
+            region_id,
+            mount=d.get("type", "unknown"),
+            ground_z=d.get("ground_z"),
+            pole_xy=None if d.get("pole_xy") is None else np.asarray(d["pole_xy"], float),
+            confidence=d.get("confidence", "low"),
+            metrics=dict(d.get("metrics") or {}),
+        )
 
 
 @dataclass
@@ -50,6 +73,8 @@ class PartEdit:
     removed: int = 0
     new_faces: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
     removed_uv_tris: list = field(default_factory=list)  # uv triangles of deleted faces (to wipe)
+    new_vertices: int = 0
+    protected_kept: int = 0  # faces that would have been removed but lie in a protected area
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +130,12 @@ def analyse_region(parts: list[MeshPart], region: SignRegion, cfg: GeometryConfi
     )
     ring_area = A[ring].sum()
     expected = (2 * region.half_u + 0.8) * (2 * region.half_v + 0.8) - (2 * region.half_u) * (2 * region.half_v)
-    if ring_area > 0.35 * expected:
+    wall_ratio = float(ring_area / max(expected, 1e-9))
+    info.metrics["wall_ratio"] = round(wall_ratio, 3)
+    if wall_ratio > 0.35:
         info.mount = "wall"
+        # clearly backed by a surface vs. a borderline ring coverage
+        info.confidence = "high" if wall_ratio > 0.5 else "low"
         return info
 
     # ground level around the footprint
@@ -119,18 +148,25 @@ def analyse_region(parts: list[MeshPart], region: SignRegion, cfg: GeometryConfi
         info.ground_z = float(C[below, 2].min()) if below.any() else None
     if info.ground_z is None or not cfg.remove_poles:
         info.mount = "free"
+        info.metrics["ground_found"] = info.ground_z is not None
+        info.confidence = "low"
         return info
 
     # pole: something inside the prism under the plate but nothing around it
     mid = (C[:, 2] > info.ground_z + 0.4) & (C[:, 2] < plate_bottom - 0.15)
     inside = mid & (dist < cfg.pole_margin)
     around = mid & (dist >= cfg.pole_margin) & (dist < cfg.pole_margin + 0.4)
-    if A[inside].sum() > 0.005 and A[around].sum() < 0.5 * A[inside].sum() + 0.02:
+    a_in, a_around = float(A[inside].sum()), float(A[around].sum())
+    info.metrics.update(inside_area=round(a_in, 4), around_area=round(a_around, 4), plate_height=round(float(plate_bottom - info.ground_z), 3))
+    if a_in > 0.005 and a_around < 0.5 * a_in + 0.02:
         info.mount = "pole"
         sel = inside
         info.pole_xy = np.average(C[sel, :2], axis=0, weights=A[sel])
+        info.confidence = "high" if (a_around < 0.25 * a_in + 0.01 and wall_ratio < 0.2) else "low"
     else:
         info.mount = "free"
+        # nothing under the plate at all (gantry) is clear; a busy surrounding is not
+        info.confidence = "high" if (a_in < 0.002 and a_around < 0.01 and wall_ratio < 0.2) else "low"
     return info
 
 
@@ -285,6 +321,7 @@ def grow_texture(mesh: MeshFile, tex_index: int, extra_rows: int) -> None:
     """Append rows at the bottom of a texture, remapping v of every part that uses it."""
     tex = mesh.textures[tex_index]
     H = tex.height
+    mesh.meta.setdefault("atlas_growth", []).append({"texture": tex_index, "old_size": [tex.width, H], "new_size": [tex.width, H + extra_rows]})
     fill = tex.image.reshape(-1, tex.image.shape[2]).mean(axis=0).astype(np.uint8)
     pad = np.empty((extra_rows, tex.width, tex.image.shape[2]), np.uint8)
     pad[:] = fill
@@ -342,10 +379,12 @@ def remove_objects(
     regions: list[SignRegion],
     infos: dict[int, RegionGeometry],
     cfg: Optional[GeometryConfig] = None,
+    protected: Optional[list] = None,
 ) -> dict[int, PartEdit]:
     """Remove sign geometry of all ``regions`` from every part of ``mesh`` and fill holes.
 
-    Returns an edit record per part index (position in ``mesh.parts``).
+    ``protected`` is a list of ``(lo, hi)`` boxes; faces touching them are never
+    removed.  Returns an edit record per part index (position in ``mesh.parts``).
     """
     cfg = cfg or GeometryConfig()
     edits: dict[int, PartEdit] = {}
@@ -364,10 +403,18 @@ def remove_objects(
             if np.any(hi < rlo) or np.any(lo > rhi):
                 continue
             remove |= object_face_mask(part, r, info, cfg)
+        kept_protected = 0
+        if protected and remove.any():
+            fv = part.vertices[part.faces]
+            shield = np.zeros(len(part.faces), bool)
+            for plo, phi in protected:
+                shield |= np.any(np.all((fv >= plo) & (fv <= phi), axis=2), axis=1)
+            kept_protected = int((remove & shield).sum())
+            remove &= ~shield
         if not remove.any():
             continue
         tex = mesh.texture_of(part)
-        edit = PartEdit(removed=int(remove.sum()))
+        edit = PartEdit(removed=int(remove.sum()), protected_kept=kept_protected)
         if tex is not None and part.uvs is not None:
             edit.removed_uv_tris = [tex.uv_to_px(part.uvs)[part.faces[remove]]]
         old_faces = part.faces
@@ -437,6 +484,7 @@ def remove_objects(
             tris = np.concatenate(new_tris)
             part.faces = np.concatenate([kept, tris])
             edit.new_faces = np.arange(len(kept), len(part.faces))
+            edit.new_vertices = int(len(pos))
         else:
             part.faces = kept
         if part.normals is not None:

@@ -7,3 +7,5 @@ data/
 *.egg-info/
 .venv/
 models/*.onnx
+.claude/worktrees/
+workspace_*/

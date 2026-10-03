@@ -116,18 +116,34 @@ def read_obj(path: str | Path, rel_path: Optional[str] = None) -> MeshFile:
     return MeshFile(rel_path or path.name, "obj", parts, textures, {"source": str(path), "mtllibs": mtl_libs})
 
 
+def _save_texture(t: Texture, out: Path) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    pil = Image.fromarray(t.image[..., :3])
+    if out.suffix.lower() == ".png":
+        pil.save(out)
+    else:
+        pil.save(out, quality=95, subsampling=0)
+
+
 def write_obj(mesh: MeshFile, dst: str | Path, src: Optional[str | Path] = None) -> None:
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if src is not None and not mesh.dirty:
+    geometry_dirty = any(p.dirty for p in mesh.parts)
+    if src is not None and not geometry_dirty:
+        # geometry untouched: .obj / .mtl stay byte-identical, only changed textures are re-encoded
         src = Path(src)
-        shutil.copyfile(src, dst)
+        if src.resolve() != dst.resolve():
+            shutil.copyfile(src, dst)
         for lib in mesh.meta.get("mtllibs", []):
-            if (src.parent / lib).is_file():
+            if (src.parent / lib).is_file() and (src.parent / lib).resolve() != (dst.parent / lib).resolve():
                 (dst.parent / lib).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src.parent / lib, dst.parent / lib)
         for t in mesh.textures:
-            if t.name and (src.parent / t.name).is_file():
+            if not t.name:
+                continue
+            if t.dirty:
+                _save_texture(t, dst.parent / t.name)
+            elif (src.parent / t.name).is_file() and (src.parent / t.name).resolve() != (dst.parent / t.name).resolve():
                 (dst.parent / t.name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src.parent / t.name, dst.parent / t.name)
         return
@@ -136,13 +152,7 @@ def write_obj(mesh: MeshFile, dst: str | Path, src: Optional[str | Path] = None)
     for k, t in enumerate(mesh.textures):
         name = t.name or f"{dst.stem}_tex{k}.{'png' if t.encoding == 'png' else 'jpg'}"
         tex_names.append(name)
-        out = dst.parent / name
-        out.parent.mkdir(parents=True, exist_ok=True)
-        pil = Image.fromarray(t.image[..., :3])
-        if out.suffix.lower() == ".png":
-            pil.save(out)
-        else:
-            pil.save(out, quality=95, subsampling=0)
+        _save_texture(t, dst.parent / name)
     with open(dst.parent / mtl_name, "w", encoding="utf-8") as f:
         for k, part in enumerate(mesh.parts):
             f.write(f"newmtl {part.name or f'mat{k}'}\nKa 1 1 1\nKd 1 1 1\nillum 1\n")

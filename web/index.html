@@ -16,7 +16,7 @@
       <span class="logo" aria-hidden="true"></span>
       <div>
         <h1>三维实景敏感信息去除</h1>
-        <p>自动识别 OSGB / Mesh 实景模型中的限高、限重、限速、路牌等标志, 删除标志几何并按周围纹理修复, 各级 LOD 一致输出</p>
+        <p>导入检查 → 原始预览 → 只检测 → 人工审核 → 执行修复 → 下载。原始数据只读, 所有输出写入独立目录</p>
       </div>
     </div>
     <span id="health" class="pill">正在连接服务…</span>
@@ -25,56 +25,32 @@
   <main class="layout">
     <aside class="side">
       <section class="card">
-        <h2><span class="step">1</span>上传数据</h2>
+        <h2>新建任务</h2>
         <div id="drop" class="drop" tabindex="0">
           <strong>拖入 OSGB 数据文件夹或 .zip</strong>
-          <span>支持倾斜摄影 OSGB 瓦片 (Data/ + metadata.xml, 含各级 LOD), 以及 OBJ (含 mtl 与贴图) / GLB 网格</span>
+          <span>OSGB 瓦片 (Data/ + metadata.xml, 含各级 LOD), OBJ (含 mtl 与贴图) / GLB。._*、.DS_Store、__MACOSX 会被自动忽略</span>
         </div>
         <div class="row">
           <label class="btn ghost">选择文件夹<input id="pickDir" type="file" webkitdirectory directory multiple hidden></label>
           <label class="btn ghost">选择 zip / 文件<input id="pickFiles" type="file" multiple accept=".zip,.osgb,.obj,.mtl,.jpg,.jpeg,.png,.glb,.gltf,.xml" hidden></label>
         </div>
         <div id="picked" class="picked muted">尚未选择数据</div>
-        <button id="demo" class="btn link" type="button">没有数据? 使用内置示例场景试一试</button>
-      </section>
-
-      <section class="card">
-        <h2><span class="step">2</span>处理选项</h2>
-        <fieldset class="cats">
-          <legend>需要去除的敏感信息</legend>
-          <label><input type="checkbox" value="speed_limit" checked>限速标志</label>
-          <label><input type="checkbox" value="height_limit" checked>限高标志</label>
-          <label><input type="checkbox" value="weight_limit" checked>限重标志</label>
-          <label><input type="checkbox" value="width_limit" checked>限宽标志</label>
-          <label><input type="checkbox" value="prohibitory" checked>其他禁令标志</label>
-          <label><input type="checkbox" value="road_name" checked>路牌</label>
-          <label><input type="checkbox" value="guide" checked>指路标志</label>
-          <label><input type="checkbox" value="warning" checked>警告标志</label>
-        </fieldset>
-        <label class="switch"><input id="optGeom" type="checkbox" checked><span>同时删除标志牌与立杆几何, 并补平地面 / 墙面</span></label>
-        <label class="field">纹理修复算法
-          <select id="optInpaint">
-            <option value="auto" selected>自动 (样本块合成, 保持纹理细节)</option>
-            <option value="telea">快速平滑 (Telea)</option>
-            <option value="lama">LaMa 深度模型 (需在服务端配置模型)</option>
-          </select>
-        </label>
-        <button id="start" class="btn primary" type="button" disabled>开始处理</button>
-      </section>
-
-      <section class="card" id="jobCard" hidden>
-        <h2><span class="step">3</span>处理进度</h2>
-        <div class="jobname" id="jobName"></div>
-        <div class="bar"><div id="barFill"></div></div>
-        <div class="status"><span id="jobMsg">—</span><span id="jobPct">0%</span></div>
-        <details>
-          <summary>运行日志</summary>
-          <pre id="log"></pre>
-        </details>
-        <div id="resultBox" hidden>
-          <div id="summary" class="summary"></div>
-          <a id="download" class="btn primary" href="#">下载修复后的数据 (.zip)</a>
+        <button id="upload" class="btn primary" type="button" disabled>上传并导入检查</button>
+        <div id="localBox" class="localbox" hidden>
+          <label class="field">本机数据目录 (只读复制为工作副本)
+            <input id="localPath" type="text" placeholder="/Users/…/01Mesh">
+          </label>
+          <div class="muted small" id="localRoots"></div>
+          <button id="localImport" class="btn ghost" type="button">从本机路径导入</button>
         </div>
+        <button id="demo" class="btn link" type="button">没有数据? 用新生成的合成示例场景试一试</button>
+        <details class="adv">
+          <summary>资源限制 (可选)</summary>
+          <label class="field">单步最长时间 (秒)<input id="limSeconds" type="number" min="10" placeholder="不限"></label>
+          <label class="field">内存上限 (MB)<input id="limMemory" type="number" min="200" placeholder="不限"></label>
+          <label class="field">单次解码贴图上限 (MB)<input id="limDecoded" type="number" min="50" placeholder="不限"></label>
+          <label class="field">单个文件读写超时 (秒)<input id="limBridge" type="number" min="5" placeholder="默认 600"></label>
+        </details>
       </section>
 
       <section class="card">
@@ -84,26 +60,87 @@
     </aside>
 
     <section class="content">
-      <div class="viewer card">
+      <div class="card" id="jobCard" hidden>
+        <div class="jobhead">
+          <div>
+            <h2 id="jobName">—</h2>
+            <div class="muted small" id="jobSource"></div>
+          </div>
+          <button id="cancel" class="btn danger small" type="button" hidden>取消当前步骤</button>
+        </div>
+        <ol class="stepper" id="stepper"></ol>
+        <div class="bar"><div id="barFill"></div></div>
+        <div class="status"><span id="jobMsg">—</span><span id="jobPct">0%</span></div>
+        <details><summary>运行日志</summary><pre id="log"></pre></details>
+      </div>
+
+      <div class="card" id="scanCard" hidden>
+        <h2><span class="step">1</span>导入检查</h2>
+        <div id="scanBody"></div>
+      </div>
+
+      <div class="viewer card" id="viewerCard" hidden>
         <div class="toolbar">
           <div class="seg" role="tablist">
-            <button id="showBefore" type="button">处理前</button>
-            <button id="showAfter" type="button" class="on">处理后</button>
+            <button id="showBefore" type="button" class="on">原始模型</button>
+            <button id="showAfter" type="button" disabled>修复后</button>
           </div>
-          <label class="switch small"><input id="showMarkers" type="checkbox" checked><span>标注检测位置</span></label>
+          <label class="switch small"><input id="showMarkers" type="checkbox" checked><span>标注候选位置</span></label>
           <button id="resetView" class="btn ghost small" type="button">重置视角</button>
-          <span id="viewerInfo" class="muted"></span>
+          <span id="viewerInfo" class="muted small"></span>
         </div>
-        <div id="canvasWrap">
-          <div id="viewerEmpty" class="empty">
-            <p>处理完成后, 这里会显示三维模型 (可切换处理前 / 处理后对比)</p>
-            <p class="muted">鼠标左键旋转 · 右键平移 · 滚轮缩放 · 点击下方结果卡片定位</p>
-          </div>
-        </div>
+        <div id="canvasWrap"><div id="viewerEmpty" class="empty"><p>导入检查后生成原始模型预览</p></div></div>
       </div>
-      <div class="card">
-        <h2>检测与修复结果 <span id="regionCount" class="muted"></span></h2>
-        <div id="regions" class="regions"><p class="muted">暂无结果</p></div>
+
+      <div class="card" id="detectCard" hidden>
+        <h2><span class="step">3</span>只检测 <span class="muted small">(不修改任何模型文件)</span></h2>
+        <fieldset class="cats">
+          <legend>需要去除的类别 (未选的类别仍会列出, 标为待审核)</legend>
+          <label><input type="checkbox" value="speed_limit" checked>限速</label>
+          <label><input type="checkbox" value="height_limit" checked>限高</label>
+          <label><input type="checkbox" value="weight_limit" checked>限重</label>
+          <label><input type="checkbox" value="width_limit" checked>限宽</label>
+          <label><input type="checkbox" value="prohibitory" checked>其他禁令</label>
+          <label><input type="checkbox" value="road_name" checked>路牌</label>
+          <label><input type="checkbox" value="guide" checked>指路标志</label>
+          <label><input type="checkbox" value="warning" checked>警告标志</label>
+        </fieldset>
+        <div class="grid2">
+          <label class="field">检测阈值<input id="optMinScore" type="number" step="0.05" min="0" max="1" value="0.55"></label>
+          <label class="field">自动建议阈值<input id="optAuto" type="number" step="0.05" min="0" max="1" value="0.85"></label>
+        </div>
+        <label class="switch"><input id="optDiag" type="checkbox"><span>保存被拒颜色候选的特写与原因 (用于排查漏检)</span></label>
+        <button id="detect" class="btn primary" type="button">开始检测 (只读)</button>
+        <div id="detectSummary" class="summary"></div>
+      </div>
+
+      <div class="card" id="reviewCard" hidden>
+        <h2><span class="step">4</span>人工审核 <span id="reviewCount" class="muted small"></span></h2>
+        <p class="muted small">置信度是检测器的打分, 不是准确率。低置信度、映射失败或安装方式不确定的候选标为“待审核”, 默认不处理。定位不可靠的候选不能删除几何。</p>
+        <div class="bulk">
+          <button id="acceptAuto" class="btn ghost small" type="button">接受全部“可自动”候选</button>
+          <button id="rejectAll" class="btn ghost small" type="button">全部拒绝</button>
+        </div>
+        <div id="candidates" class="regions"></div>
+        <h3>保护区域 <span class="muted small">(这些范围内的几何与纹理不会被修改, 修复后会逐一核对)</span></h3>
+        <div id="protected"></div>
+        <button id="addProtected" class="btn ghost small" type="button">添加保护区域</button>
+        <button id="saveReview" class="btn primary" type="button">保存审核结果</button>
+        <div id="reviewMsg" class="summary"></div>
+      </div>
+
+      <div class="card" id="repairCard" hidden>
+        <h2><span class="step">5</span>执行修复</h2>
+        <p class="muted small">只执行已保存的审核决定。输出写入任务目录下的独立副本, 原始数据不会被修改。</p>
+        <button id="repair" class="btn primary" type="button" disabled>执行修复</button>
+        <div id="repairBody"></div>
+      </div>
+
+      <div class="card" id="resultCard" hidden>
+        <h2><span class="step">6</span>结果与下载</h2>
+        <div id="verdict" class="verdict"></div>
+        <div id="regions" class="regions"></div>
+        <a id="download" class="btn primary" href="#">下载修复后的数据与报告 (.zip)</a>
       </div>
     </section>
   </main>

@@ -55,6 +55,8 @@ class SignRegion:
     mount: str = "unknown"
     sources: list = field(default_factory=list)
     shape: str = "rect"
+    mapping: dict = field(default_factory=dict)  # 2D -> 3D lifting statistics
+    review_reasons: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.center = np.asarray(self.center, dtype=np.float64)
@@ -113,6 +115,8 @@ class SignRegion:
             "height": round(2 * self.half_v, 3),
             "shape": self.shape,
             "mount": self.mount,
+            "mapping": self.mapping,
+            "review_reasons": list(self.review_reasons),
         }
 
     @staticmethod
@@ -128,6 +132,8 @@ class SignRegion:
             id=d.get("id", -1),
             mount=d.get("mount", "unknown"),
             shape=d.get("shape", "rect"),
+            mapping=dict(d.get("mapping") or {}),
+            review_reasons=list(d.get("review_reasons") or []),
         )
 
 
@@ -174,6 +180,9 @@ def merge_regions(regions: list[SignRegion]) -> list[SignRegion]:
         dup.center = dup.center + (a0 + a1) / 2 * u + (b0 + b1) / 2 * v
         dup.half_u, dup.half_v = (a1 - a0) / 2, (b1 - b0) / 2
         dup.sources.extend(r.sources)
+        for reason in r.review_reasons:
+            if reason not in dup.review_reasons:
+                dup.review_reasons.append(reason)
     for i, r in enumerate(kept):
         r.id = i
     return kept
