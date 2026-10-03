@@ -13,38 +13,55 @@ import numpy as np
 
 from .core.mesh import MeshFile
 from .io.dataset import Dataset, FileInfo
+from .io.lodgraph import LodGraph
 from .preview import crop_parts, write_glb
 
 
-def lod_cut(files: list[FileInfo], budget: int) -> tuple[list[str], int]:
-    """Files of the finest complete level whose total triangle count fits ``budget``."""
-    by_name = {}
-    for f in files:
-        by_name.setdefault(Path(f.rel).name, []).append(f)
-    referenced = set()
-    for f in files:
-        referenced.update(f.children)
-    roots = [f for f in files if Path(f.rel).name not in referenced]
-    if not roots:
-        return [f.rel for f in files], 0
-    level = roots
-    chosen = [f.rel for f in level]
-    depth = 0
-    while True:
-        nxt = []
-        for f in level:
-            kids = []
-            for c in f.children:
-                cands = by_name.get(Path(c).name, [])
-                same_dir = [k for k in cands if Path(k.rel).parent == Path(f.rel).parent]
-                kids.extend(same_dir or cands)
-            nxt.extend(kids if kids else [f])
-        if [x.rel for x in nxt] == [x.rel for x in level]:
+def lod_cut(files: list[FileInfo], budget: int, graph: Optional[LodGraph] = None) -> tuple[list[str], int]:
+    """Files of the finest complete level whose total triangle count fits ``budget``.
+
+    The cut walks the PagedLOD reference graph (normalised relative paths)
+    level by level from the root files.  A file referenced by several parents
+    appears once, files that failed to scan are never used (their parent is
+    kept instead, so no hole appears) and reference cycles cannot loop.
+    ``graph`` defaults to one built from ``FileInfo.children``.
+    """
+    ok = {f.rel: f for f in files if getattr(f, "ok", True)}
+    if graph is None:
+        graph = LodGraph({f.rel: f.children for f in files if f.rel in ok}, existing=[f.rel for f in files])
+    level = [r for r in graph.roots if r in ok]
+    if not level:
+        return sorted(ok), 0
+    visited = set(level)
+    chosen, depth = list(level), 0
+    for _ in range(len(graph.nodes) + 1):
+        nxt: list[str] = []
+        placed: set[str] = set()
+
+        def put(rel: str) -> None:
+            if rel not in placed:
+                placed.add(rel)
+                nxt.append(rel)
+
+        for rel in level:
+            kids = [k for k in graph.children(rel) if k != rel]
+            if not kids or any(k not in ok for k in kids):
+                put(rel)  # finest available here (or a child is unusable)
+                continue
+            new = [k for k in kids if k not in visited]
+            if new:
+                for k in new:
+                    put(k)
+            elif any(graph.in_cycle(rel, k) for k in kids):
+                put(rel)  # only back references: stop descending
+            # else: every child is already shown via another parent
+        if not nxt or nxt == level:
             break
-        if sum(x.num_triangles for x in nxt) > budget:
+        if sum(ok[r].num_triangles for r in nxt) > budget:
             break
+        visited.update(nxt)
         level = nxt
-        chosen = [f.rel for f in level]
+        chosen = list(level)
         depth += 1
     return chosen, depth
 
@@ -65,7 +82,7 @@ def write_overviews(src: Path, out: Path, prev_dir: Path, report: Optional[dict]
     a = Dataset(src)
     files = a.scan()
     if a.kind == "osgb":
-        rels, depth = lod_cut(files, budget)
+        rels, depth = lod_cut(files, budget, graph=a.graph)
     else:
         rels, depth = [f.rel for f in files], 0
     max_tex = 1024 if len(rels) <= 16 else 512
