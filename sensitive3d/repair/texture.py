@@ -119,14 +119,28 @@ def part_targets(
     return Target(tm.rows[sel], tm.cols[sel], tm.positions[sel], fn, reg[sel])
 
 
-def _view_specs(region: SignRegion, info: Optional[RegionGeometry], targets_pts: np.ndarray, cfg: TextureConfig):
+def free_standing_plate(info: Optional[RegionGeometry]) -> bool:
+    """A plate with nothing behind it (pole / gantry): there is no background surface to inpaint from."""
+    return info is not None and info.mount in ("pole", "free")
+
+
+def _view_specs(region: SignRegion, info: Optional[RegionGeometry], targets_pts: np.ndarray, cfg: TextureConfig, operation: str = "geometry"):
     """Repair view placements: a front view of the plate area and, for signs on
-    a pole, a top-down view of the patched ground at the pole base."""
+    a pole, a top-down view of the patched ground at the pole base.
+
+    When a free-standing plate keeps its geometry (texture-only repair) its
+    front becomes a blank plate (``blank`` view) and a ``back`` view keeps the
+    back side as it is.
+    """
     specs = []
     n = region.normal
     u, v = plane_axes(n)
     w = 2 * region.half_u + 2 * max(cfg.context, 0.75 * region.size)
     h = 2 * region.half_v + 2 * max(cfg.context, 0.75 * region.size)
+    if operation == "texture" and free_standing_plate(info):
+        specs.append(("blank", region.center, -n, w, h, v, -0.35, 0.45))
+        specs.append(("back", region.center, n, w, h, v, -0.45, 0.35))
+        return specs
     specs.append(("front", region.center, -n, w, h, v, -0.35, 0.45))
     if info is not None and info.mount == "pole" and info.ground_z is not None:
         xy = info.pole_xy if info.pole_xy is not None else region.center[:2]
@@ -149,22 +163,33 @@ def build_views(
     texel: float = 0.02,
     info: Optional[RegionGeometry] = None,
     log=lambda s: None,
+    operation: str = "geometry",
 ) -> list[RepairView]:
     """Render + inpaint the repair views of one region from the edited finest LOD.
 
     ``texel`` is the texel size (m) of the finest LOD around the region; the
-    views are rendered slightly finer than that.
+    views are rendered slightly finer than that.  ``operation`` is the
+    region's repair operation (``geometry`` / ``texture``).
     """
     pts = [t.positions[t.region == region.id] for _, t in targets]
     P = np.concatenate(pts) if pts else np.zeros((0, 3))
     ps = float(np.clip(texel * 0.75, 0.004, 0.05))
     views = []
-    for kind, center, fwd, w, h, up, near, far in _view_specs(region, info, P, cfg):
+    back_res = None
+    for kind, center, fwd, w, h, up, near, far in _view_specs(region, info, P, cfg, operation):
         cam = OrthoCamera.looking(center, fwd, w, h, ps, up_hint=up, near=near, far=far, max_pixels=1600)
         reach = max(w, h) + 1.0
         lo, hi = center - reach, center + reach
         near_items = [it for it in items if np.all(it.part.bounds()[0] <= hi) and np.all(it.part.bounds()[1] >= lo)]
         res = render(near_items, cam, cull_backfaces=True)
+        if kind == "back":
+            # the back side keeps its appearance: identity view, nothing synthesised
+            views.append(RepairView(region.id, cam, res.color, res.color.copy(), np.zeros(res.valid.shape, bool), res.valid.copy(), res.depth.copy()))
+            log(f"    region {region.id}: back view {cam.width}x{cam.height} px (unchanged)")
+            continue
+        if kind == "blank":
+            back_cam = OrthoCamera.looking(center, -fwd, w, h, ps, up_hint=up, near=-0.45, far=0.35, max_pixels=1600)
+            back_res = render(near_items, back_cam, cull_backfaces=True)
         mask = np.zeros(res.valid.shape, bool)
         if len(P):
             xy, depth = cam.project(P)
@@ -179,12 +204,33 @@ def build_views(
         mask = cv2.dilate(mask.astype(np.uint8), np.ones((2 * k + 1,) * 2, np.uint8)).astype(bool)
         mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)).astype(bool)
         valid = res.valid | mask  # target pixels without a rendered surface (holes) are synthesised too
-        out = inpaint(res.color.copy(), mask, valid, method=cfg.method, lama_model=cfg.lama_model)
+        if kind == "blank":
+            out = _blank_plate(res.color, mask, back_res, region)
+        else:
+            out = inpaint(res.color.copy(), mask, valid, method=cfg.method, lama_model=cfg.lama_model)
         # synthesised pixels without a rendered surface keep depth NaN: any
         # target texel projecting there is accepted
         views.append(RepairView(region.id, cam, res.color, out, mask, valid, res.depth.copy()))
         log(f"    region {region.id}: {kind} view {cam.width}x{cam.height} px, {int(mask.sum())} px synthesised")
     return views
+
+
+def _blank_plate(front: np.ndarray, mask: np.ndarray, back, region: SignRegion, seed: int = 0) -> np.ndarray:
+    """Front of a free-standing plate as a blank board in the colour of its own back side."""
+    colour = np.array([150.0, 150.0, 150.0])
+    spread = 6.0
+    if back is not None and back.valid.any():
+        on_plate = back.valid.copy()
+        on_plate[back.valid] = region.contains(back.position[back.valid], margin=0.0, front=0.1, back=0.15)
+        px = back.color[on_plate].astype(float)
+        if len(px) >= 20:
+            colour = np.median(px, axis=0)
+            spread = float(np.clip(np.median(np.abs(px - colour)), 2.0, 12.0))
+    rng = np.random.default_rng(seed)
+    out = front.copy()
+    noise = rng.normal(0.0, spread, size=(int(mask.sum()), 1))
+    out[mask] = np.clip(colour[None, :] + noise, 0, 255).astype(np.uint8)
+    return out
 
 
 def paint_targets(
@@ -282,35 +328,41 @@ def paint_targets(
     return painted
 
 
-def wipe_freed_texels(mesh: MeshFile, edits: dict[int, PartEdit], pad: int = 4) -> None:
-    """Overwrite atlas texels that belonged to deleted faces (no sign pixels may survive)."""
-    by_tex: dict[int, list] = {}
-    for pi, e in edits.items():
+def clean_atlas(mesh: MeshFile, edits: Optional[dict] = None) -> dict[int, np.ndarray]:
+    """Rewrite every atlas texel that no face uses, in every modified texture.
+
+    Unused texels (gutters, empty atlas space, texels of deleted faces) are
+    invisible in the model but stay in the file; they often hold colour that
+    bled from neighbouring charts, including the sign that was removed.  They
+    are refilled from the nearest texel that a face still uses (standard
+    gutter padding), so no stale sign content survives.  Returns, per texture,
+    the mask of texels that belonged to deleted faces (for the residual check).
+    """
+    removed_by_tex: dict[int, np.ndarray] = {}
+    for pi, e in (edits or {}).items():
         part = mesh.parts[pi]
         if part.texture is None or not e.removed_uv_tris:
             continue
-        by_tex.setdefault(part.texture, []).extend(e.removed_uv_tris)
-    for ti, tri_lists in by_tex.items():
-        tex = mesh.textures[ti]
-        tris = np.concatenate(tri_lists)
-        if len(tris) == 0:
+        tex = mesh.textures[part.texture]
+        tris = np.concatenate(e.removed_uv_tris)
+        if not len(tris):
             continue
-        pts = tris.reshape(-1, 2)
-        faces = np.arange(len(pts)).reshape(-1, 3)
-        removed = rasterize_uv(pts, faces, tex.width, tex.height).valid
-        # conservative: include the gutter around deleted charts
-        removed = cv2.dilate(removed.astype(np.uint8), np.ones((2 * pad + 1,) * 2, np.uint8)).astype(bool)
-        covered = np.zeros_like(removed)
+        m = rasterize_uv(tris.reshape(-1, 2), np.arange(len(tris) * 3).reshape(-1, 3), tex.width, tex.height).valid
+        removed_by_tex[part.texture] = removed_by_tex.get(part.texture, np.zeros_like(m)) | m
+    for ti, tex in enumerate(mesh.textures):
+        if not tex.dirty and ti not in removed_by_tex:
+            continue
+        covered = np.zeros((tex.height, tex.width), bool)
         for p in mesh.parts:
             if p.texture == ti and p.uvs is not None and len(p.faces):
                 covered |= rasterize_uv(tex.uv_to_px(p.uvs), p.faces, tex.width, tex.height).valid
-        target = removed & ~covered
-        if not target.any():
+        if not covered.any() or covered.all():
             continue
-        ys, xs = np.nonzero(removed)
-        y0, y1 = max(ys.min() - 8, 0), min(ys.max() + 9, tex.height)
-        x0, x1 = max(xs.min() - 8, 0), min(xs.max() + 9, tex.width)
-        sub = tex.image[y0:y1, x0:x1]
-        fill_from_nearest(sub, covered[y0:y1, x0:x1], target[y0:y1, x0:x1])
-        tex.image[y0:y1, x0:x1] = sub
+        fill_from_nearest(tex.image, covered, ~covered)
         tex.dirty = True
+    return removed_by_tex
+
+
+def wipe_freed_texels(mesh: MeshFile, edits: dict[int, PartEdit], pad: int = 4) -> dict[int, np.ndarray]:
+    """Backwards compatible name of :func:`clean_atlas`."""
+    return clean_atlas(mesh, edits)

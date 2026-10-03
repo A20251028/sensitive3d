@@ -150,8 +150,8 @@ table.kv { width: 100%; border-collapse: collapse; font-size: 13px; margin: 8px 
 table.kv td { border-bottom: 1px solid var(--line); padding: 5px 6px; }
 table.kv td:nth-child(odd) { color: var(--muted); width: 18%; }
 ul.plain { margin: 6px 0; padding-left: 18px; font-size: 12px; word-break: break-all; }
-.summary .tag.ok { background: #e6f4ea; color: var(--ok); }
-.summary .tag.warn { background: #fff4e5; color: var(--warn); }
+.summary .tag.good { background: #e6f4ea; color: var(--ok); }
+.summary .tag.pend { background: #fff4e5; color: var(--warn); }
 .bulk { display: flex; gap: 8px; margin: 8px 0 12px; }
 .cand.review { border-color: #f0b35a; }
 .cand.on, .region.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }

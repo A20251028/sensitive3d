@@ -167,7 +167,7 @@ function render(j) {
   $("detectCard").hidden = j.steps.import.status !== "done";
   $("detect").disabled = busy;
   if (j.detection) {
-    $("detectSummary").innerHTML = `<span class="tag">候选 ${j.detection.total}</span><span class="tag ok">可自动 ${j.detection.auto}</span><span class="tag warn">待审核 ${j.detection.review}</span><span class="muted">颜色候选 ${j.detection.colour_candidates ?? "—"} · ${j.detection.seconds ?? "—"} 秒</span>` + (j.detection.stopped ? `<div class="warnbox">检测提前停止: ${esc(j.detection.stopped.message)} (已保存的结果仍可查看)</div>` : "");
+    $("detectSummary").innerHTML = `<span class="tag">候选 ${j.detection.total}</span><span class="tag good">可自动 ${j.detection.auto}</span><span class="tag pend">待审核 ${j.detection.review}</span><span class="muted">颜色候选 ${j.detection.colour_candidates ?? "—"} · ${j.detection.seconds ?? "—"} 秒</span>` + (j.detection.stopped ? `<div class="warnbox">检测提前停止: ${esc(j.detection.stopped.message)} (已保存的结果仍可查看)</div>` : "");
   }
   if (j.steps.detect.status === "done" || j.steps.detect.status === "stopped") {
     if (!loaded.detection) loadDetection();
@@ -240,7 +240,7 @@ let protectedBoxes = [];
 async function loadDetection() {
   loaded.detection = await api(`/api/jobs/${jobId}/detection`).catch(() => null);
   if (!loaded.detection) return;
-  const review = await api(`/api/jobs/${jobId}/review`).catch(() => null);
+  const review = job?.review_saved ? await api(`/api/jobs/${jobId}/review`).catch(() => null) : null;
   loaded.review = review;
   decisions = {};
   for (const c of loaded.detection.candidates) {
@@ -359,7 +359,7 @@ async function loadRepair() {
   const r = loaded.repair;
   if (!r) return;
   const rb = (r.files || []).filter((f) => f.readback && !f.readback.ok);
-  const atlas = (r.atlas_residual || []).filter((a) => a.sign_colour_fraction > 0.02);
+  const atlas = (r.atlas_residual || []).filter((a) => a.surviving_fraction > 0.02 && a.surviving_texels > 50);
   const prot = r.protected_check || [];
   $("repairBody").innerHTML = `
     ${r.stopped ? `<div class="errbox">修复提前停止: ${esc(r.stopped.message)}。输出不完整, 不能使用。</div>` : ""}

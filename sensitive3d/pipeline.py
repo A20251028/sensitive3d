@@ -520,6 +520,8 @@ class Pipeline:
         regions = [t.region for t in targets]
         infos = {t.candidate_id: t.mount for t in targets}
         geo_regions = [t.region for t in targets if t.operation == "geometry"]
+        ops = {t.candidate_id: t.operation for t in targets}
+        families = _colour_families([t.region.category for t in targets])
 
         # ---- finest level ------------------------------------------------
         leaf_sel: dict[str, FileInfo] = {}
@@ -531,8 +533,10 @@ class Pipeline:
         ctx.check_decoded(mb, "修复区域的最精细层级文件")
         ctx.progress(0.05, f"修复最精细层级: {len(leaf_sel)} 个文件")
         leaf_meshes: dict[str, MeshFile] = {}
+        leaf_before: dict[str, dict] = {}
         for i, rel in enumerate(sorted(leaf_sel)):
             leaf_meshes[rel] = self._load(ds, rel)
+            leaf_before[rel] = {k: t.image.copy() for k, t in enumerate(leaf_meshes[rel].textures)}
             ctx.progress(0.05 + 0.1 * (i + 1) / len(leaf_sel), f"读取 {i + 1}/{len(leaf_sel)}: {rel}")
         leaf_pairs = [(p, m.texture_of(p)) for m in leaf_meshes.values() for p in m.leaf_parts()]
         orig_items = [RenderItem(_snapshot(p), t.image.copy() if t is not None else None) for p, t in leaf_pairs]
@@ -572,7 +576,10 @@ class Pipeline:
                     if (t.region == r.id).any():
                         tlist.append((mesh.parts[pi], t))
                         texels.append(texel_size(mesh.parts[pi], mesh.texture_of(mesh.parts[pi])))
-            views[r.id] = build_views(r, tlist, edited_items, cfg.texture, texel=float(np.median(texels)) if texels else 0.02, info=infos.get(r.id), log=ctx.log)
+            views[r.id] = build_views(
+                r, tlist, edited_items, cfg.texture, texel=float(np.median(texels)) if texels else 0.02,
+                info=infos.get(r.id), log=ctx.log, operation=ops[r.id],
+            )
             ctx.progress(0.25 + 0.25 * (k + 1) / len(regions), f"修复视图 {k + 1}/{len(regions)}")
         if cfg.previews:
             for r in regions:
@@ -585,8 +592,8 @@ class Pipeline:
         for rel, mesh in leaf_meshes.items():
             painted = paint_targets(mesh, leaf_targets[rel], views, coarse=False, cfg=cfg.texture)
             edits = leaf_edits.get(rel, {})
-            wipe_freed_texels(mesh, edits)
-            atlas.extend(_atlas_residual(rel, mesh, edits, leaf_targets[rel]))
+            removed = wipe_freed_texels(mesh, edits)
+            atlas.extend(_atlas_residual(rel, mesh, removed, leaf_targets[rel], leaf_before[rel], families))
             self._account(rel, mesh, edits, painted, totals, report)
 
         if cfg.previews:
@@ -616,6 +623,7 @@ class Pipeline:
         for k, rel in enumerate(sorted(coarse_sel)):
             ctx.check_decoded((getattr(coarse_sel[rel], "decoded_bytes", 0) or 0) / 2**20, rel)
             mesh = self._load(ds, rel)
+            before = {k: t.image.copy() for k, t in enumerate(mesh.textures)}
             edits = remove_objects(mesh, geo_regions, infos, cfg.geometry, protected=protected) if geo_regions else {}
             tg = {}
             for pi, part in enumerate(mesh.parts):
@@ -626,8 +634,8 @@ class Pipeline:
                 if t is not None:
                     tg[pi] = t
             painted = paint_targets(mesh, tg, views, coarse=True, cfg=cfg.texture)
-            wipe_freed_texels(mesh, edits)
-            atlas.extend(_atlas_residual(rel, mesh, edits, tg))
+            removed = wipe_freed_texels(mesh, edits)
+            atlas.extend(_atlas_residual(rel, mesh, removed, tg, before, families))
             self._account(rel, mesh, edits, painted, totals, report)
             if mesh.dirty:
                 self._save(ds, mesh, output_path)
@@ -637,9 +645,9 @@ class Pipeline:
 
         report.update(totals)
         report["atlas_residual"] = atlas
-        bad_atlas = [a for a in atlas if a["sign_colour_fraction"] > 0.02]
+        bad_atlas = [a for a in atlas if a["surviving_fraction"] > 0.02 and a["surviving_texels"] > 50]
         if bad_atlas:
-            report["warnings"].append(f"{len(bad_atlas)} 个纹理在被修改/释放的区域仍有较多标志颜色像素, 请人工检查")
+            report["warnings"].append(f"{len(bad_atlas)} 个纹理在重绘/释放的区域仍保留较多标志本身颜色的像素, 请人工检查")
         if protected:
             ctx.progress(0.92, "检查保护区域")
             report["protected_check"] = self._protected_check(ds, output_path, protected, list(leaf_meshes) + sorted(coarse_sel))
@@ -888,45 +896,81 @@ def _environment() -> dict:
     return env
 
 
-def _atlas_residual(rel: str, mesh: MeshFile, edits: dict, targets: dict) -> list[dict]:
-    """Sign-coloured pixels left in texels that were repainted or freed (privacy check of the atlas)."""
-    from .core.raster import rasterize_uv
+_FAMILY = {
+    "speed_limit": ("red",),
+    "height_limit": ("red",),
+    "weight_limit": ("red",),
+    "width_limit": ("red",),
+    "prohibitory": ("red",),
+    "road_name": ("blue",),
+    "guide": ("green",),
+    "warning": ("yellow",),
+}
 
+
+def _colour_families(categories) -> tuple:
+    fams: list = []
+    for c in categories:
+        for f in _FAMILY.get(c, SIGN_COLORS):
+            if f not in fams:
+                fams.append(f)
+    return tuple(fams) or SIGN_COLORS
+
+
+def _family_mask(img: np.ndarray, families) -> np.ndarray:
+    masks = color_masks(img[..., :3], loose=True)
+    out = np.zeros(img.shape[:2], bool)
+    for f in families:
+        out |= masks[f]
+    return out
+
+
+def _atlas_residual(rel: str, mesh: MeshFile, removed: dict, targets: dict, before: dict, families) -> list[dict]:
+    """Privacy check of the atlas: sign-coloured texels that survived the repair.
+
+    Checked texels: everything that was repainted or belonged to deleted
+    faces, plus a gutter ring.  A texel counts as *surviving* when it shows a
+    colour of the removed signs' family (red / blue / green / yellow) both
+    before and after the repair, so legitimate surfaces such as grass do not
+    raise alarms unless they kept a sign colour that was already there.
+    """
     out = []
-    by_tex: dict[int, np.ndarray] = {}
-    for pi, e in edits.items():
-        part = mesh.parts[pi]
-        if part.texture is None or not e.removed_uv_tris:
-            continue
-        tex = mesh.textures[part.texture]
-        tris = np.concatenate(e.removed_uv_tris)
-        if not len(tris):
-            continue
-        m = rasterize_uv(tris.reshape(-1, 2), np.arange(len(tris) * 3).reshape(-1, 3), tex.width, tex.height).valid
-        m = cv2.dilate(m.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)  # include gutters
-        by_tex[part.texture] = by_tex.get(part.texture, np.zeros_like(m)) | m
+    by_tex: dict[int, np.ndarray] = {ti: m.copy() for ti, m in (removed or {}).items()}
     for pi, t in targets.items():
         part = mesh.parts[pi]
         if part.texture is None:
             continue
         tex = mesh.textures[part.texture]
-        m = by_tex.get(part.texture, np.zeros((tex.height, tex.width), bool))
+        m = by_tex.get(part.texture)
+        if m is None:
+            m = np.zeros((tex.height, tex.width), bool)
         m[t.rows, t.cols] = True
         by_tex[part.texture] = m
     for ti, m in by_tex.items():
         tex = mesh.textures[ti]
-        if m.shape != tex.image.shape[:2] or not m.any():
+        m = cv2.dilate(m.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)  # include gutters
+        old = before.get(ti)
+        if m.shape != tex.image.shape[:2] or not m.any() or old is None or old.shape[:2] != m.shape:
             continue
         ys, xs = np.nonzero(m)
         y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
-        masks = color_masks(tex.image[y0:y1, x0:x1, :3], loose=True)
-        sign = np.zeros((y1 - y0, x1 - x0), bool)
-        for c in SIGN_COLORS:
-            sign |= masks[c]
         sub = m[y0:y1, x0:x1]
+        now = _family_mask(tex.image[y0:y1, x0:x1], families)
+        was = _family_mask(old[y0:y1, x0:x1], families)
         n = int(sub.sum())
-        k = int((sign & sub).sum())
-        out.append({"rel": rel, "texture": ti, "texels_checked": n, "sign_colour_texels": k, "sign_colour_fraction": round(k / max(n, 1), 4)})
+        k = int((now & was & sub).sum())
+        out.append(
+            {
+                "rel": rel,
+                "texture": ti,
+                "families": list(families),
+                "texels_checked": n,
+                "sign_colour_before": int((was & sub).sum()),
+                "sign_colour_after": int((now & sub).sum()),
+                "surviving_texels": k,
+                "surviving_fraction": round(k / max(n, 1), 4),
+            }
+        )
     return out
 
 
