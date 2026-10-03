@@ -230,17 +230,22 @@ class Dataset:
             return str(rel.parent) if len(parts) > 1 else rel.stem
         return rel.stem
 
-    def _osgb_records(self, paths: list[Path]) -> list[dict]:
+    def _osgb_records(self, paths: list[Path], **bridge_kw) -> list[dict]:
         """One info record per path, matched by file name; gaps become failures."""
         strs = [str(p) for p in paths]
+        bridge_kw = {k: v for k, v in bridge_kw.items() if v is not None}
         try:
-            recs = osgb.scan_osgb(paths)
+            recs = osgb.scan_osgb(paths, **bridge_kw)
+        except osgb.BridgeCancelled:
+            raise
         except (osgb.BridgeError, ValueError):  # crash, or non-JSON output
             osgb.find_bridge()  # no bridge at all: let that error through
             recs = []
             for s in strs:  # isolate the file that breaks the batch
                 try:
-                    recs.extend(osgb.scan_osgb([s]))
+                    recs.extend(osgb.scan_osgb([s], **bridge_kw))
+                except osgb.BridgeCancelled:
+                    raise
                 except (osgb.BridgeError, ValueError) as e:
                     recs.append({"file": s, "ok": False, "error": f"osgb_bridge 异常: {e}"})
         def key(f) -> str:
@@ -257,13 +262,15 @@ class Dataset:
             out.append(r)
         return out
 
-    def scan(self) -> list[FileInfo]:
+    def scan(self, timeout: Optional[float] = None, cancel=None) -> list[FileInfo]:
+        """Scan every mesh file.  ``timeout`` / ``cancel`` are passed to each bridge call."""
+        bridge_kw = {"timeout": timeout, "cancel": cancel}
         self._discover()
         paths = [p for p in self._candidates() if MESH_SUFFIXES.get(p.suffix.lower()) == self.kind]
         infos: list[FileInfo] = []
         self._texture_info = self.kind != "osgb"
         if self.kind == "osgb":
-            for p, rec in zip(paths, self._osgb_records(paths)):
+            for p, rec in zip(paths, self._osgb_records(paths, **bridge_kw)):
                 rel = p.relative_to(self.root)
                 info = FileInfo(rel.as_posix(), self._tile_of(rel))
                 if rec.get("ok"):
@@ -394,19 +401,19 @@ class Dataset:
     def path(self, rel: str) -> Path:
         return self.root / rel
 
-    def load(self, rel: str) -> MeshFile:
+    def load(self, rel: str, timeout: Optional[float] = None, cancel=None) -> MeshFile:
         p = self.path(rel)
         if self.kind == "osgb":
-            return osgb.read_osgb(p, rel)
+            return osgb.read_osgb(p, rel, timeout=timeout, cancel=cancel)
         if self.kind == "obj":
             return obj.read_obj(p, rel)
         return gltf.read_gltf(p, rel)
 
-    def save(self, mesh: MeshFile, out_root: str | Path) -> None:
+    def save(self, mesh: MeshFile, out_root: str | Path, timeout: Optional[float] = None, cancel=None) -> None:
         dst = Path(out_root) / mesh.path
         src = self.path(mesh.path)
         if self.kind == "osgb":
-            osgb.write_osgb(mesh, src, dst)
+            osgb.write_osgb(mesh, src, dst, timeout=timeout, cancel=cancel)
         elif self.kind == "obj":
             obj.write_obj(mesh, dst, src)
         else:

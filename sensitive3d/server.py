@@ -325,10 +325,7 @@ class JobManager:
 
         ds = Dataset(job.dataset_dir)
         pipe.ctx.progress(0.0, "读取数据集结构")
-        try:
-            ds.scan(**pipe.ctx.bridge_kwargs()) if ds.kind == "osgb" else ds.scan()
-        except TypeError:
-            ds.scan()
+        pipe._bridge(ds.scan, what="结构扫描")
         return ds
 
     def _detect(self, job: Job, pipe) -> None:

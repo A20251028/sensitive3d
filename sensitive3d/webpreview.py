@@ -77,6 +77,52 @@ def _load(ds: Dataset, rels: list[str], max_tex: int) -> MeshFile:
     return crop_parts(pairs, lo, hi, max_tex=max_tex)
 
 
+def write_overview(root: Path, prev_dir: Path, which: str, origin=None, budget: int = 400_000, ctx=None) -> dict:
+    """One overview GLB (``which`` = before / after) of the finest LOD cut under ``budget`` triangles.
+
+    The decoded texture memory of the chosen files is checked against the
+    run budget *before* decoding (shrinking the preview textures afterwards
+    does not protect memory).  ``origin`` keeps before/after aligned.
+    """
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    ds = Dataset(root)
+    kw = ctx.bridge_kwargs() if ctx is not None and ds.kind == "osgb" else {}
+    files = ds.scan(**kw)
+    ok = [f for f in files if f.ok]
+    if ds.kind == "osgb":
+        rels, depth = lod_cut(ok, budget, graph=ds.graph)
+    else:
+        rels, depth = [f.rel for f in ok], 0
+    by_rel = {f.rel: f for f in ok}
+    decoded = sum(by_rel[r].decoded_bytes for r in rels if r in by_rel) / 2**20
+    if ctx is not None:
+        ctx.check_decoded(decoded, "预览所选层级")
+    max_tex = 1024 if len(rels) <= 16 else 512
+    pairs = []
+    for i, rel in enumerate(rels):
+        if ctx is not None:
+            ctx.check("生成预览")
+            ctx.progress(0.1 + 0.8 * i / max(len(rels), 1), f"预览: 读取 {i + 1}/{len(rels)} {rel}")
+        m = ds.load(rel, **kw)
+        pairs += [(p, m.texture_of(p)) for p in m.parts]
+    mesh = crop_parts(pairs, np.full(3, -1e18), np.full(3, 1e18), max_tex=max_tex)
+    lo, hi = mesh.bounds()
+    origin = np.asarray(origin, float) if origin is not None else (lo + hi) / 2
+    name = f"overview_{which}.glb"
+    write_glb(mesh, prev_dir / name, origin)
+    return {
+        "path": f"previews/{name}",
+        "origin": [float(x) for x in origin],
+        "min": [float(x) for x in lo],
+        "max": [float(x) for x in hi],
+        "files": len(rels),
+        "level": depth,
+        "triangles": int(sum(len(p.faces) for p in mesh.parts)),
+        "decoded_mb": round(decoded, 1),
+        "note": f"预览贴图缩小到 {max_tex}px, 仅用于浏览",
+    }
+
+
 def write_overviews(src: Path, out: Path, prev_dir: Path, report: Optional[dict] = None, budget: int = 400_000) -> dict:
     prev_dir.mkdir(parents=True, exist_ok=True)
     a = Dataset(src)

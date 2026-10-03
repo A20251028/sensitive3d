@@ -18,7 +18,6 @@ status is ``auto`` are repaired; the others are reported as pending).
 
 from __future__ import annotations
 
-import inspect
 import json
 import time
 from dataclasses import dataclass, field
@@ -40,7 +39,7 @@ from .preview import closeup, context_camera, crop_parts, save_png, write_glb
 from .repair.geometry import GeometryConfig, RegionGeometry, analyse_region, remove_objects
 from .repair.texture import TextureConfig, build_views, paint_targets, part_targets, wipe_freed_texels
 from .review import RepairTarget, ReviewError, parse_protected, resolve_targets
-from .runctx import RunContext, RunLimits, StopRun
+from .runctx import BudgetExceeded, Cancelled, RunContext, RunLimits, StopRun
 
 ProgressFn = Callable[[float, str], None]
 SIGN_COLORS = ("red", "blue", "green", "yellow")
@@ -172,15 +171,24 @@ class Pipeline:
     def progress(self, frac: float, msg: str) -> None:
         self.ctx.progress(frac, msg)
 
+    def _bridge(self, fn, *args, what: str = ""):
+        """Run an io call with timeout / cancel; map bridge stops to run stops."""
+        from .io import osgb
+
+        try:
+            return fn(*args, **self.ctx.bridge_kwargs())
+        except osgb.BridgeCancelled as e:
+            raise Cancelled(f"已取消 ({what})") from e
+        except osgb.BridgeTimeout as e:
+            raise BudgetExceeded(f"{what} 超过单次读写超时: {e}") from e
+
     def _load(self, ds: Dataset, rel: str) -> MeshFile:
         self.ctx.check(f"读取 {rel}")
-        kwargs = self.ctx.bridge_kwargs() if ds.kind == "osgb" else {}
-        try:
-            params = inspect.signature(ds.load).parameters
-            kwargs = {k: v for k, v in kwargs.items() if k in params or any(p.kind == p.VAR_KEYWORD for p in params.values())}
-        except (TypeError, ValueError):
-            kwargs = {}
-        return ds.load(rel, **kwargs)
+        return self._bridge(ds.load, rel, what=f"读取 {rel}")
+
+    def _save(self, ds: Dataset, mesh: MeshFile, output_path) -> None:
+        self.ctx.check(f"写出 {mesh.path}")
+        self._bridge(ds.save, mesh, output_path, what=f"写出 {mesh.path}")
 
     # =====================================================================
     # stage 1: import check
@@ -189,14 +197,9 @@ class Pipeline:
         ctx = self.ctx
         ctx.progress(0.0, "导入检查: 扫描数据集结构")
         ds = Dataset(input_path)
-        scan_kw = {}
-        try:
-            if "timeout" in inspect.signature(ds.scan).parameters:
-                scan_kw = self.ctx.bridge_kwargs()
-        except (TypeError, ValueError):
-            pass
-        files = ds.scan(**scan_kw)
+        files = self._bridge(ds.scan, what="结构扫描")
         rep = ds.report.to_dict() if getattr(ds, "report", None) is not None else {}
+        rep["file_list"] = rep.pop("files", [])
         rep.update(
             {
                 "stage": "scan",
@@ -237,7 +240,7 @@ class Pipeline:
         if ev_dir is not None:
             ev_dir.mkdir(parents=True, exist_ok=True)
         if not ds.files:
-            ds.scan()
+            self._bridge(ds.scan, what="结构扫描")
         t0 = time.time()
         records: list[dict] = []  # per (tile-level) region, before merging
         regions: list[SignRegion] = []
@@ -467,7 +470,7 @@ class Pipeline:
         prev_dir = work_dir / "previews"
         prev_dir.mkdir(parents=True, exist_ok=True)
         if not ds.files:
-            ds.scan()
+            self._bridge(ds.scan, what="结构扫描")
         blocking = list(getattr(getattr(ds, "report", None), "blocking_errors", []) or [])
         if blocking and not cfg.allow_scan_errors:
             raise ScanBlocked(blocking)
@@ -598,8 +601,7 @@ class Pipeline:
                 report["warnings"].append(f"修复后复检仍发现 {len(residual)} 处疑似标志, 请人工查看 (复检只是辅助手段)")
         for rel, mesh in leaf_meshes.items():
             if mesh.dirty:
-                ctx.check(f"写出 {rel}")
-                ds.save(mesh, output_path)
+                self._save(ds, mesh, output_path)
                 totals["files_modified"] += 1
                 self._readback(ds, rel, output_path, mesh, report)
         ctx.progress(0.6, "修复其余 LOD 层级")
@@ -628,7 +630,7 @@ class Pipeline:
             atlas.extend(_atlas_residual(rel, mesh, edits, tg))
             self._account(rel, mesh, edits, painted, totals, report)
             if mesh.dirty:
-                ds.save(mesh, output_path)
+                self._save(ds, mesh, output_path)
                 totals["files_modified"] += 1
                 self._readback(ds, rel, output_path, mesh, report)
             ctx.progress(0.6 + 0.3 * (k + 1) / max(len(coarse_sel), 1), f"LOD 文件 {k + 1}/{len(coarse_sel)}: {rel}")
@@ -712,8 +714,18 @@ class Pipeline:
             problems.append(f"几何体数量 {len(back.parts)} != {len(mesh.parts)}")
         else:
             for a, b in zip(mesh.parts, back.parts):
-                if len(a.faces) != len(b.faces) or len(a.vertices) != len(b.vertices):
-                    problems.append(f"几何体 {a.index}: 面/顶点数量不一致")
+                # unreferenced vertices may be dropped by a format (OBJ), so compare what faces use
+                if len(a.faces) != len(b.faces):
+                    problems.append(f"几何体 {a.index}: 三角形数 {len(b.faces)} != {len(a.faces)}")
+                    continue
+                if not len(a.faces):
+                    continue
+                (alo, ahi), (blo, bhi) = a.bounds(), b.bounds()
+                if not (np.allclose(alo, blo, atol=1e-3) and np.allclose(ahi, bhi, atol=1e-3)):
+                    problems.append(f"几何体 {a.index}: 包围盒不一致")
+                aa, ba = float(a.face_areas().sum()), float(b.face_areas().sum())
+                if abs(aa - ba) > 1e-4 * max(aa, 1e-9) + 1e-6:
+                    problems.append(f"几何体 {a.index}: 表面积 {ba:.4f} != {aa:.4f}")
         for k, (ta, tb) in enumerate(zip(mesh.textures, back.textures)):
             if ta.image.shape[:2] != tb.image.shape[:2]:
                 problems.append(f"纹理 {k}: 尺寸 {tb.image.shape[:2]} != {ta.image.shape[:2]}")
