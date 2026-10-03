@@ -4,6 +4,7 @@
     sensitive3d detect  <input> [--json out.json]     # detection only
     sensitive3d serve   [--host 0.0.0.0 --port 8000]  # web UI
     sensitive3d synth   <out_dir>                     # synthetic test data
+    sensitive3d doctor  [--json]                      # check Python packages + OSGB bridge
 """
 
 from __future__ import annotations
@@ -87,6 +88,17 @@ def cmd_synth(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    from .doctor import environment_report, format_report
+
+    report = environment_report()
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=1))
+    else:
+        print(format_report(report))
+    return 0 if report["ok"] else 1
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="sensitive3d", description="Detect and remove sensitive traffic signs from 3D reality meshes")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -124,6 +136,10 @@ def main(argv=None) -> int:
     p.add_argument("out")
     p.add_argument("--formats", default="osgb,obj,glb")
     p.set_defaults(func=cmd_synth)
+
+    p = sub.add_parser("doctor", help="check the environment (Python packages, OSGB bridge selftest)")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=cmd_doctor)
 
     args = ap.parse_args(argv)
     return args.func(args)
